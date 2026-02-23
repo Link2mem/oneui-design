@@ -6,6 +6,15 @@ plugins {
     alias(libs.plugins.hilt.android)
     alias(libs.plugins.ksp)
     id ("kotlin-parcelize")
+    alias(libs.plugins.lsparanoid)
+}
+
+lsparanoid {
+    seed = 1010101
+    classFilter = {
+        it.startsWith("dev.oneuiproject.oneuiexample.data.stargazers.network.api")}
+    includeDependencies = false
+    variantFilter = { it.name.endsWith("release", true) }
 }
 
 android {
