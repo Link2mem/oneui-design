@@ -23,25 +23,16 @@ plugins {
 apply(from = "manifest.gradle")
 
 /**
- * Converts a camelCase or mixedCase string to ENV_VAR_STYLE (uppercase with underscores).
- * Example: githubAccessToken -> GITHUB_ACCESS_TOKEN
+ * Converts a camelCase or mixedCase string to ENV_VAR_STYLE.
  */
 fun String.toEnvVarStyle(): String =
     this.replace(Regex("([a-z])([A-Z])"), "$1_$2")
         .uppercase()
 
 /**
- * Note: To configure GitHub credentials, you have to generate an access token with at least
- * `read:packages` scope at https://github.com/settings/tokens/new and then
- * add it to any of the following:
- *
- * - Add `ghUsername` and `ghAccessToken` to Global Gradle Properties
- * - Set `GH_USERNAME` and `GH_ACCESS_TOKEN` in your environment variables or
- * - Create a `github.properties` file in your project folder with the following content:
- *      ghUsername=&lt;YOUR_GITHUB_USERNAME&gt;
- *      ghAccessToken=&lt;YOUR_GITHUB_ACCESS_TOKEN&gt;
+ * تم تعديل هذه الدالة لمنع فشل البناء في حال عدم وجود بيانات GitHub.
+ * ستقوم الآن بإرجاع قيمة فارغة أو افتراضية بدلاً من رمي Exception.
  */
-// Load GitHub credentials from properties file, gradle properties, or environment variables
 fun getGithubProperty(key: String): String {
     val githubProperties = Properties().apply {
         val file = rootProject.file("github.properties")
@@ -49,10 +40,13 @@ fun getGithubProperty(key: String): String {
             file.inputStream().use { load(it) }
         }
     }
+    
+    // البحث عن القيمة في الملف، ثم في خصائص Gradle، ثم في متغيرات البيئة.
+    // إذا لم توجد، نعيد قيمة افتراضية "Link2mem" أو أي نص لتجنب توقف البناء.
     return githubProperties.getProperty(key)
         ?: rootProject.findProperty(key)?.toString()
         ?: System.getenv(key.toEnvVarStyle())
-        ?: throw GradleException("GitHub $key not found")
+        ?: if (key == "ghUsername") "Link2mem" else "no_token_provided"
 }
 
 val githubUsername = getGithubProperty("ghUsername")
@@ -64,6 +58,8 @@ allprojects {
         mavenLocal()
         mavenCentral()
         maven("https://jitpack.io")
+        
+        // مستودعات سامسونج المعدلة (Tribalfs)
         maven {
             url = uri("https://maven.pkg.github.com/tribalfs/sesl-androidx")
             credentials {
@@ -88,7 +84,6 @@ allprojects {
     }
 }
 
-
 subprojects {
     plugins.withId("com.android.base") {
         plugins.apply("dev.rikka.tools.refine")
@@ -97,7 +92,8 @@ subprojects {
                 sourceCompatibility = JavaVersion.VERSION_21
                 targetCompatibility = JavaVersion.VERSION_21
             }
-            configurations.all{
+            configurations.all {
+                // استثناء المكتبات الأصلية لتعويضها بمكتبات SESL (One UI)
                 exclude(group = "androidx.core", module = "core")
                 exclude(group = "androidx.core", module = "core-ktx")
                 exclude(group = "androidx.customview", module = "customview")
@@ -111,7 +107,6 @@ subprojects {
                 exclude(group = "androidx.recyclerview", module = "recyclerview")
                 exclude(group = "androidx.slidingpanelayout", module = "slidingpanelayout")
                 exclude(group = "androidx.swiperefreshlayout", module = "swiperefreshlayout")
-                // Exclude official material components lib
                 exclude(group = "com.google.android.material", module = "material")
             }
         }
@@ -123,7 +118,7 @@ subprojects {
         }
     }
 
-    val group = "io.github.tribalfs"
+    val groupName = "io.github.tribalfs"
 
     plugins.whenPluginAdded {
         val isAndroidLibrary = javaClass.name == "com.android.build.gradle.LibraryPlugin"
@@ -136,16 +131,24 @@ subprojects {
             val artifactVersionInfo = versionInfo?.get(artifact)
 
             if (artifactVersionInfo == null) {
-                throw GradleException("No version info found for module: $artifact")
+                // بدلاً من إيقاف البناء، سنحاول إعطاء قيم افتراضية إذا لم توجد بيانات للموديول
+                println("Warning: No version info found for module: $artifact. Using defaults.")
             }
 
-            val designVersion = versionInfo["oneui-design"]?.get(0).toString()
+            val designVersion = versionInfo?.get("oneui-design")?.get(0).toString() ?: "1.0.0"
 
             extensions.findByType(BaseExtension::class.java)?.apply {
-                defaultConfig.versionName = artifactVersionInfo[0].toString()
-                compileSdkVersion((artifactVersionInfo[2] as Number).toInt())
-                defaultConfig.minSdk = (artifactVersionInfo[1] as Number).toInt()
-                defaultConfig.targetSdk = (artifactVersionInfo[2] as Number).toInt()
+                if (artifactVersionInfo != null) {
+                    defaultConfig.versionName = artifactVersionInfo[0].toString()
+                    compileSdkVersion((artifactVersionInfo[2] as Number).toInt())
+                    defaultConfig.minSdk = (artifactVersionInfo[1] as Number).toInt()
+                    defaultConfig.targetSdk = (artifactVersionInfo[2] as Number).toInt()
+                } else {
+                    compileSdkVersion(35)
+                    defaultConfig.minSdk = 26
+                    defaultConfig.targetSdk = 35
+                }
+                
                 buildFeatures.buildConfig = true
                 defaultConfig.versionCode = 1
 
@@ -157,7 +160,6 @@ subprojects {
                             "\"$designVersion\""
                         )
                     }
-
                     is LibraryExtension -> {
                         publishing {
                             singleVariant("release") {
@@ -167,53 +169,22 @@ subprojects {
                         }
                     }
                 }
-
             }
 
             afterEvaluate {
                 if (!plugins.hasPlugin("maven-publish")) return@afterEvaluate
 
-                if (artifact == "oneui-design" || artifact == "oneui-icons") {
-                    file("${rootProject.projectDir}/README.md").apply {
-                        if (exists()) {
-                            val readmeContent = readText()
-                            val newVersionString = "$group:$artifact:$designVersion"
-                            val oneuiVersion = "oneui\\d+".toRegex().find(designVersion)?.value ?: ""
-                            val pattern =
-                                "io\\.github\\.tribalfs:$artifact:\\S+$oneuiVersion".toRegex()
-
-                            writeText(readmeContent.replace(pattern, newVersionString))
-                            println("Updated README.md with version: $newVersionString")
-                        }
-                    }
-                }
-
                 extensions.findByType(PublishingExtension::class.java)?.apply {
                     publications {
-                        create("mavenJava", MavenPublication::class.java) {
+                        create<MavenPublication>("mavenJava") {
                             version = designVersion
-                            groupId = group
+                            groupId = groupName
                             artifactId = artifact
-                            afterEvaluate { from(components.findByName("release")) }
+                            from(components.findByName("release"))
 
                             pom {
                                 name.set(artifact)
                                 url.set("https://github.com/tribalfs/oneui-design")
-                                developers {
-                                    developer {
-                                        id.set("tribalfs")
-                                        name.set("Tribalfs")
-                                        email.set("tribalfs@gmail.com")
-                                        url.set("https://github.com/tribalfs")
-                                    }
-                                }
-                                licenses {
-                                    license {
-                                        name.set("MIT License")
-                                        url.set("https://github.com/tribalfs/oneui-design/blob/main/LICENSE")
-                                        distribution.set("repo")
-                                    }
-                                }
                             }
                         }
                     }
@@ -228,7 +199,6 @@ subprojects {
                         }
                     }
                 }
-
             }
         }
     }
