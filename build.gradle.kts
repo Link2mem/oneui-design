@@ -3,10 +3,12 @@
 import com.android.build.gradle.AppExtension
 import com.android.build.gradle.BaseExtension
 import com.android.build.gradle.LibraryExtension
-import org.gradle.kotlin.dsl.withType
+import org.gradle.api.publish.maven.MavenPublication
+import org.gradle.api.publish.PublishingExtension
+import org.gradle.kotlin.dsl.*
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
-//import java.util.Properties
+import java.util.Properties // السطر المنقذ الذي يحل الأخطاء الحالية
 
 plugins {
     alias(libs.plugins.android.application) apply false
@@ -22,16 +24,12 @@ plugins {
 
 apply(from = "manifest.gradle")
 
-/**
- * Converts a camelCase or mixedCase string to ENV_VAR_STYLE.
- */
 fun String.toEnvVarStyle(): String =
     this.replace(Regex("([a-z])([A-Z])"), "$1_$2")
         .uppercase()
 
 /**
- * تم تعديل هذه الدالة لمنع فشل البناء في حال عدم وجود بيانات GitHub.
- * ستقوم الآن بإرجاع قيمة فارغة أو افتراضية بدلاً من رمي Exception.
+ * دالة جلب خصائص GitHub مع حماية ضد توقف البناء
  */
 fun getGithubProperty(key: String): String {
     val githubProperties = Properties().apply {
@@ -41,12 +39,11 @@ fun getGithubProperty(key: String): String {
         }
     }
     
-    // البحث عن القيمة في الملف، ثم في خصائص Gradle، ثم في متغيرات البيئة.
-    // إذا لم توجد، نعيد قيمة افتراضية "Link2mem" أو أي نص لتجنب توقف البناء.
-    return githubProperties.getProperty(key)
+    val result = githubProperties.getProperty(key)
         ?: rootProject.findProperty(key)?.toString()
         ?: System.getenv(key.toEnvVarStyle())
-        ?: if (key == "ghUsername") "Link2mem" else "no_token_provided"
+    
+    return result ?: if (key == "ghUsername") "Link2mem" else "no_token_provided"
 }
 
 val githubUsername = getGithubProperty("ghUsername")
@@ -59,7 +56,6 @@ allprojects {
         mavenCentral()
         maven("https://jitpack.io")
         
-        // مستودعات سامسونج المعدلة (Tribalfs)
         maven {
             url = uri("https://maven.pkg.github.com/tribalfs/sesl-androidx")
             credentials {
@@ -93,7 +89,6 @@ subprojects {
                 targetCompatibility = JavaVersion.VERSION_21
             }
             configurations.all {
-                // استثناء المكتبات الأصلية لتعويضها بمكتبات SESL (One UI)
                 exclude(group = "androidx.core", module = "core")
                 exclude(group = "androidx.core", module = "core-ktx")
                 exclude(group = "androidx.customview", module = "customview")
@@ -130,12 +125,7 @@ subprojects {
                 rootProject.extensions.extraProperties.get("versions_metadata") as? Map<String, List<Any>>
             val artifactVersionInfo = versionInfo?.get(artifact)
 
-            if (artifactVersionInfo == null) {
-                // بدلاً من إيقاف البناء، سنحاول إعطاء قيم افتراضية إذا لم توجد بيانات للموديول
-                println("Warning: No version info found for module: $artifact. Using defaults.")
-            }
-
-            val designVersion = versionInfo?.get("oneui-design")?.get(0).toString() ?: "1.0.0"
+            val designVersion = versionInfo?.get("oneui-design")?.get(0)?.toString() ?: "1.0.0"
 
             extensions.findByType(BaseExtension::class.java)?.apply {
                 if (artifactVersionInfo != null) {
